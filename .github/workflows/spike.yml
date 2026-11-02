@@ -1,0 +1,28 @@
+name: spike
+on: pull_request
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  oidc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: OIDC claims (payload only, token not printed)
+        run: |
+          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then echo "NO_OIDC_AVAILABLE"; exit 0; fi
+          T=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=ransomleak-jit" | jq -r .value)
+          echo "$T" | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4; if(l==2)print $0"=="; else if(l==3)print $0"="; else print $0}' | base64 -d | jq '{iss,aud,repository,repository_owner,repository_owner_id,event_name,ref}'
+  sarif:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: pipx install semgrep && semgrep scan --config p/python --sarif -o semgrep.sarif . || true
+      - run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b .
+          ./trivy fs --scanners vuln,misconfig,secret --format sarif -o trivy.sarif . || true
+      - run: |
+          curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar xz gitleaks
+          ./gitleaks detect --report-format sarif --report-path gitleaks.sarif --exit-code 0 || true
+      - uses: actions/upload-artifact@v4
+        with: { name: sarif, path: "*.sarif" }
